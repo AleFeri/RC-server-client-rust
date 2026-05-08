@@ -1,5 +1,5 @@
-use std::net::{UdpSocket, TcpListener, TcpStream};
-use std::io::{Write, Read};
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream, UdpSocket};
 use std::thread;
 
 use clap::{Parser, Subcommand, ValueEnum};
@@ -36,7 +36,7 @@ enum Command {
         /// Number of messages sent
         #[arg(short, long, default_value_t = 1)]
         count: u32,
-    }
+    },
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -44,35 +44,45 @@ enum Protocol {
     #[value(name = "udp", alias = "UDP")]
     Udp,
     #[value(name = "tcp", alias = "TCP")]
-    Tcp
+    Tcp,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum Transform {
     None,
     Upper,
-    Reverse
+    Reverse,
 }
 
 fn main() -> std::io::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Server { port, protocol, transform } => match protocol {
+        Command::Server {
+            port,
+            protocol,
+            transform,
+        } => match protocol {
             Protocol::Udp => udp_server(port, transform),
-            Protocol::Tcp => tcp_server(port, transform)
+            Protocol::Tcp => tcp_server(port, transform),
         },
-        Command::Client { host, port, protocol, message, count } => match protocol {
+        Command::Client {
+            host,
+            port,
+            protocol,
+            message,
+            count,
+        } => match protocol {
             Protocol::Udp => udp_client(host, port, message, count),
             Protocol::Tcp => tcp_client(host, port, message, count),
-        }
+        },
     }
 }
 
 /*
  * Servers
  */
-fn udp_server (port: u16, transform: Transform) -> std::io::Result<()> {
+fn udp_server(port: u16, transform: Transform) -> std::io::Result<()> {
     let socket = UdpSocket::bind(("0.0.0.0", port))?;
     let mut buf = [0u8; 1024];
 
@@ -83,7 +93,7 @@ fn udp_server (port: u16, transform: Transform) -> std::io::Result<()> {
     }
 }
 
-fn tcp_server (port: u16, transform: Transform) -> std::io::Result<()> {
+fn tcp_server(port: u16, transform: Transform) -> std::io::Result<()> {
     let listener = TcpListener::bind(("0.0.0.0", port))?;
     for stream in listener.incoming() {
         let stream = stream?;
@@ -123,7 +133,7 @@ fn apply_transform(input: &[u8], transform: Transform) -> Vec<u8> {
 /*
  * Clients
  */
-fn udp_client (host: String, port: u16, message: String, count: u32) -> std::io::Result<()> {
+fn udp_client(host: String, port: u16, message: String, count: u32) -> std::io::Result<()> {
     let socket = UdpSocket::bind("0.0.0.0:0")?;
     socket.connect((host, port))?;
     let mut buf = [0u8; 1024];
