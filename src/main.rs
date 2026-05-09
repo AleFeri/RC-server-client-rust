@@ -1,6 +1,7 @@
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream, UdpSocket};
 use std::thread;
+use std::time::Duration;
 
 use clap::{Parser, Subcommand, ValueEnum};
 
@@ -84,7 +85,8 @@ fn main() -> std::io::Result<()> {
  */
 fn udp_server(port: u16, transform: Transform) -> std::io::Result<()> {
     let socket = UdpSocket::bind(("0.0.0.0", port))?;
-    let mut buf = [0u8; 1024];
+    socket.set_read_timeout(Some(Duration::from_secs(5)))?;
+    let mut buf = [0u8; 1472];
 
     loop {
         let (n, addr) = socket.recv_from(&mut buf)?;
@@ -107,7 +109,7 @@ fn tcp_server(port: u16, transform: Transform) -> std::io::Result<()> {
 }
 
 fn tcp_server_handle_client(mut stream: TcpStream, transform: Transform) -> std::io::Result<()> {
-    let mut buf = [0u8; 1024];
+    let mut buf = [0u8; 1472];
     loop {
         let n = stream.read(&mut buf)?;
         if n == 0 {
@@ -136,12 +138,18 @@ fn apply_transform(input: &[u8], transform: Transform) -> Vec<u8> {
 fn udp_client(host: String, port: u16, message: String, count: u32) -> std::io::Result<()> {
     let socket = UdpSocket::bind("0.0.0.0:0")?;
     socket.connect((host, port))?;
-    let mut buf = [0u8; 1024];
+    socket.set_read_timeout(Some(Duration::from_secs(5)))?;
+    let mut buf = [0u8; 1472];
 
     for i in 0..count {
         socket.send(message.as_bytes())?;
-        let n = socket.recv(&mut buf)?;
-        println!("[{i}] received: {}", String::from_utf8_lossy(&buf[..n]));
+        match socket.recv(&mut buf) {
+            Ok(n) => println!("[{i}] received: {}", String::from_utf8_lossy(&buf[..n])),
+            Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                eprintln!("[{i}] timeout");
+            }
+            Err(e) => return Err(e),
+        }
     }
 
     Ok(())
@@ -149,7 +157,7 @@ fn udp_client(host: String, port: u16, message: String, count: u32) -> std::io::
 
 fn tcp_client(host: String, port: u16, message: String, count: u32) -> std::io::Result<()> {
     let mut stream = TcpStream::connect((host, port))?;
-    let mut buf = [0u8; 1024];
+    let mut buf = [0u8; 1472];
 
     for i in 0..count {
         stream.write_all(message.as_bytes())?;
