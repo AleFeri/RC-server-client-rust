@@ -85,7 +85,6 @@ fn main() -> std::io::Result<()> {
  */
 fn udp_server(port: u16, transform: Transform) -> std::io::Result<()> {
     let socket = UdpSocket::bind(("0.0.0.0", port))?;
-    socket.set_read_timeout(Some(Duration::from_secs(5)))?;
     let mut buf = [0u8; 1472];
 
     loop {
