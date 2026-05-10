@@ -20,26 +20,26 @@ enum Command {
     /// Run as server
     Server {
         protocol: Protocol,
-
         port: u16,
-
         /// Transformation to apply to the echo before sending it back
         #[arg(short, long, default_value = "none")]
         transform: Transform,
+        /// Enable rtt
+        #[arg(long)]
+        rtt: bool,
     },
     /// Run as client
     Client {
         protocol: Protocol,
-
         host: String,
-
         port: u16,
-
         message: String,
-
         /// Number of messages sent
         #[arg(short, long, default_value_t = 1)]
         count: u32,
+        /// Enable rtt
+        #[arg(long)]
+        rtt: bool,
     },
 }
 
@@ -66,9 +66,10 @@ fn main() -> std::io::Result<()> {
             port,
             protocol,
             transform,
+            rtt,
         } => match protocol {
-            Protocol::Udp => udp_server(port, transform),
-            Protocol::Tcp => tcp_server(port, transform),
+            Protocol::Udp => udp_server(port, transform, rtt),
+            Protocol::Tcp => tcp_server(port, transform, rtt),
         },
         Command::Client {
             host,
@@ -76,9 +77,10 @@ fn main() -> std::io::Result<()> {
             protocol,
             message,
             count,
+            rtt,
         } => match protocol {
-            Protocol::Udp => udp_client(host, port, message, count),
-            Protocol::Tcp => tcp_client(host, port, message, count),
+            Protocol::Udp => udp_client(host, port, message, count, rtt),
+            Protocol::Tcp => tcp_client(host, port, message, count, rtt),
         },
     }
 }
@@ -86,25 +88,30 @@ fn main() -> std::io::Result<()> {
 /*
  * Servers
  */
-fn udp_server(port: u16, transform: Transform) -> std::io::Result<()> {
+fn udp_server(port: u16, transform: Transform, rtt: bool) -> std::io::Result<()> {
     let socket = UdpSocket::bind(("0.0.0.0", port))?;
     let mut buf = [0u8; 1472];
 
     loop {
         let (n, addr) = socket.recv_from(&mut buf)?;
-        let mut response = Vec::with_capacity(n);
-        response.extend_from_slice(&buf[..8]);
-        response.extend_from_slice(&apply_transform(&buf[8..n], transform));
+        let response = if rtt && n > 8 {
+            let mut out = Vec::with_capacity(n);
+            out.extend_from_slice(&buf[..8]);
+            out.extend_from_slice(&apply_transform(&buf[8..n], transform));
+            out
+        } else {
+            apply_transform(&buf[..n], transform)
+        };
         socket.send_to(&response, addr)?;
     }
 }
 
-fn tcp_server(port: u16, transform: Transform) -> std::io::Result<()> {
+fn tcp_server(port: u16, transform: Transform, rtt: bool) -> std::io::Result<()> {
     let listener = TcpListener::bind(("0.0.0.0", port))?;
     for stream in listener.incoming() {
         let stream = stream?;
         thread::spawn(move || {
-            if let Err(e) = tcp_server_handle_client(stream, transform) {
+            if let Err(e) = tcp_server_handle_client(stream, transform, rtt) {
                 eprintln!("client error: {e}");
             }
         });
@@ -112,16 +119,25 @@ fn tcp_server(port: u16, transform: Transform) -> std::io::Result<()> {
     Ok(())
 }
 
-fn tcp_server_handle_client(mut stream: TcpStream, transform: Transform) -> std::io::Result<()> {
+fn tcp_server_handle_client(
+    mut stream: TcpStream,
+    transform: Transform,
+    rtt: bool,
+) -> std::io::Result<()> {
     let mut buf = [0u8; 1472];
     loop {
         let n = stream.read(&mut buf)?;
         if n == 0 {
             return Ok(()); // conn closed by client
         }
-        let mut response = Vec::with_capacity(n);
-        response.extend_from_slice(&buf[..8]);
-        response.extend_from_slice(&apply_transform(&buf[8..n], transform));
+        let response = if rtt && n > 8 {
+            let mut out = Vec::with_capacity(n);
+            out.extend_from_slice(&buf[..8]);
+            out.extend_from_slice(&apply_transform(&buf[8..n], transform));
+            out
+        } else {
+            apply_transform(&buf[..n], transform)
+        };
         stream.write_all(&response)?;
     }
 }
@@ -141,7 +157,13 @@ fn apply_transform(input: &[u8], transform: Transform) -> Vec<u8> {
 /*
  * Clients
  */
-fn udp_client(host: String, port: u16, message: String, count: u32) -> std::io::Result<()> {
+fn udp_client(
+    host: String,
+    port: u16,
+    message: String,
+    count: u32,
+    rtt: bool,
+) -> std::io::Result<()> {
     let socket = UdpSocket::bind("0.0.0.0:0")?;
     socket.connect((host, port))?;
     socket.set_read_timeout(Some(Duration::from_secs(5)))?;
@@ -150,23 +172,31 @@ fn udp_client(host: String, port: u16, message: String, count: u32) -> std::io::
     let mut rtts_ms: Vec<f64> = Vec::new();
 
     for i in 0..count {
-        let timestamp = ptpv2_now();
-        let mut payload = Vec::with_capacity(8 + message.len());
-        payload.extend_from_slice(&timestamp);
-        payload.extend_from_slice(message.as_bytes());
+        let payload = if rtt {
+            let mut p = Vec::with_capacity(8 + message.len());
+            p.extend_from_slice(&ptpv2_now());
+            p.extend_from_slice(message.as_bytes());
+            p
+        } else {
+            message.as_bytes().to_vec()
+        };
 
         socket.send(&payload)?;
 
         match socket.recv(&mut buf) {
             Ok(n) => {
-                let ts = &buf[0..8].try_into().unwrap();
-                let rtt_ms = calculate_rtt(ts).as_secs_f64() * 1000.0;
-                rtts_ms.push(rtt_ms);
-                println!(
-                    "[{i}] RTT: {:.3} ms, received: {}",
-                    rtt_ms,
-                    String::from_utf8_lossy(&buf[8..n])
-                );
+                if rtt {
+                    let rtt_ms =
+                        calculate_rtt(buf[0..8].try_into().unwrap()).as_secs_f64() * 1000.0;
+                    rtts_ms.push(rtt_ms);
+                    println!(
+                        "[{i}] RTT: {:.3} ms, received: {}",
+                        rtt_ms,
+                        String::from_utf8_lossy(&buf[8..n])
+                    );
+                } else {
+                    println!("[{i}] received: {}", String::from_utf8_lossy(&buf[..n]));
+                }
             }
             Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
                 eprintln!("[{i}] timeout");
@@ -175,42 +205,57 @@ fn udp_client(host: String, port: u16, message: String, count: u32) -> std::io::
         }
     }
 
-    let avg_ms = rtts_ms.iter().sum::<f64>() / rtts_ms.len() as f64;
-
-    println!("Avg RTT: {:.3} ms", avg_ms);
+    if rtt {
+        let avg_ms = rtts_ms.iter().sum::<f64>() / rtts_ms.len() as f64;
+        println!("Avg RTT: {:.3} ms", avg_ms);
+    }
 
     Ok(())
 }
 
-fn tcp_client(host: String, port: u16, message: String, count: u32) -> std::io::Result<()> {
+fn tcp_client(
+    host: String,
+    port: u16,
+    message: String,
+    count: u32,
+    rtt: bool,
+) -> std::io::Result<()> {
     let mut stream = TcpStream::connect((host, port))?;
     let mut buf = [0u8; 1472];
 
     let mut rtts_ms: Vec<f64> = Vec::new();
 
     for i in 0..count {
-        let timestamp = ptpv2_now();
-        let mut payload = Vec::with_capacity(8 + message.len());
-        payload.extend_from_slice(&timestamp);
-        payload.extend_from_slice(message.as_bytes());
+        let payload = if rtt {
+            let mut p = Vec::with_capacity(8 + message.len());
+            p.extend_from_slice(&ptpv2_now());
+            p.extend_from_slice(message.as_bytes());
+            p
+        } else {
+            message.as_bytes().to_vec()
+        };
 
         stream.write_all(&payload)?;
 
         let n = stream.read(&mut buf)?;
 
-        let rtt_ms = calculate_rtt(buf[0..8].try_into().unwrap()).as_secs_f64() * 1000.0;
-        rtts_ms.push(rtt_ms);
-
-        println!(
-            "[{i}] RTT: {:.3} ms, received: {}",
-            rtt_ms,
-            String::from_utf8_lossy(&buf[8..n])
-        );
+        if rtt {
+            let rtt_ms = calculate_rtt(buf[0..8].try_into().unwrap()).as_secs_f64() * 1000.0;
+            rtts_ms.push(rtt_ms);
+            println!(
+                "[{i}] RTT: {:.3} ms, received: {}",
+                rtt_ms,
+                String::from_utf8_lossy(&buf[8..n])
+            );
+        } else {
+            println!("[{i}] received: {}", String::from_utf8_lossy(&buf[..n]));
+        }
     }
 
-    let avg_ms = rtts_ms.iter().sum::<f64>() / rtts_ms.len() as f64;
-
-    println!("Avg RTT: {:.3} ms", avg_ms);
+    if rtt {
+        let avg_ms = rtts_ms.iter().sum::<f64>() / rtts_ms.len() as f64;
+        println!("Avg RTT: {:.3} ms", avg_ms);
+    }
 
     Ok(())
 }
