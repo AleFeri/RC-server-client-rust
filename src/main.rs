@@ -27,6 +27,9 @@ enum Command {
         /// Enable rtt
         #[arg(long)]
         rtt: bool,
+        /// Only for TCP (upd ignores it)
+        #[arg(long)]
+        no_delay: bool,
     },
     /// Run as client
     Client {
@@ -40,6 +43,9 @@ enum Command {
         /// Enable rtt
         #[arg(long)]
         rtt: bool,
+        /// Only for TCP (upd ignores it)
+        #[arg(long)]
+        no_delay: bool,
     },
 }
 
@@ -67,9 +73,10 @@ fn main() -> std::io::Result<()> {
             protocol,
             transform,
             rtt,
+            no_delay,
         } => match protocol {
             Protocol::Udp => udp_server(port, transform, rtt),
-            Protocol::Tcp => tcp_server(port, transform, rtt),
+            Protocol::Tcp => tcp_server(port, transform, rtt, no_delay),
         },
         Command::Client {
             host,
@@ -78,9 +85,10 @@ fn main() -> std::io::Result<()> {
             message,
             count,
             rtt,
+            no_delay,
         } => match protocol {
             Protocol::Udp => udp_client(host, port, message, count, rtt),
-            Protocol::Tcp => tcp_client(host, port, message, count, rtt),
+            Protocol::Tcp => tcp_client(host, port, message, count, rtt, no_delay),
         },
     }
 }
@@ -106,12 +114,12 @@ fn udp_server(port: u16, transform: Transform, rtt: bool) -> std::io::Result<()>
     }
 }
 
-fn tcp_server(port: u16, transform: Transform, rtt: bool) -> std::io::Result<()> {
+fn tcp_server(port: u16, transform: Transform, rtt: bool, no_delay: bool) -> std::io::Result<()> {
     let listener = TcpListener::bind(("0.0.0.0", port))?;
     for stream in listener.incoming() {
         let stream = stream?;
         thread::spawn(move || {
-            if let Err(e) = tcp_server_handle_client(stream, transform, rtt) {
+            if let Err(e) = tcp_server_handle_client(stream, transform, rtt, no_delay) {
                 eprintln!("client error: {e}");
             }
         });
@@ -123,7 +131,9 @@ fn tcp_server_handle_client(
     mut stream: TcpStream,
     transform: Transform,
     rtt: bool,
+    no_delay: bool,
 ) -> std::io::Result<()> {
+    stream.set_nodelay(no_delay)?;
     let mut buf = [0u8; 1472];
     loop {
         let n = stream.read(&mut buf)?;
@@ -219,8 +229,10 @@ fn tcp_client(
     message: String,
     count: u32,
     rtt: bool,
+    no_delay: bool,
 ) -> std::io::Result<()> {
     let mut stream = TcpStream::connect((host, port))?;
+    stream.set_nodelay(no_delay)?;
     let mut buf = [0u8; 1472];
 
     let mut rtts_ms: Vec<f64> = Vec::new();
