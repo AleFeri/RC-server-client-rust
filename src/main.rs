@@ -1,9 +1,12 @@
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream, UdpSocket};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use clap::{Parser, Subcommand, ValueEnum};
+
+/// I need a TAI UTC OFFSET because I'm on macos and I don't have CLOCK_TAI
+const TAI_UTC_OFFSET: u64 = 37;
 
 /// A simple UDP/TCP echo server/client
 #[derive(Parser)]
@@ -89,7 +92,9 @@ fn udp_server(port: u16, transform: Transform) -> std::io::Result<()> {
 
     loop {
         let (n, addr) = socket.recv_from(&mut buf)?;
-        let response = apply_transform(&buf[..n], transform);
+        let mut response = Vec::with_capacity(n);
+        response.extend_from_slice(&buf[..8]);
+        response.extend_from_slice(&apply_transform(&buf[8..n], transform));
         socket.send_to(&response, addr)?;
     }
 }
@@ -114,7 +119,9 @@ fn tcp_server_handle_client(mut stream: TcpStream, transform: Transform) -> std:
         if n == 0 {
             return Ok(()); // conn closed by client
         }
-        let response = apply_transform(&buf[..n], transform);
+        let mut response = Vec::with_capacity(n);
+        response.extend_from_slice(&buf[..8]);
+        response.extend_from_slice(&apply_transform(&buf[8..n], transform));
         stream.write_all(&response)?;
     }
 }
@@ -140,16 +147,37 @@ fn udp_client(host: String, port: u16, message: String, count: u32) -> std::io::
     socket.set_read_timeout(Some(Duration::from_secs(5)))?;
     let mut buf = [0u8; 1472];
 
+    let mut rtts_ms: Vec<f64> = Vec::new();
+
     for i in 0..count {
-        socket.send(message.as_bytes())?;
+        let timestamp = ptpv2_now();
+        let mut payload = Vec::with_capacity(8 + message.len());
+        payload.extend_from_slice(&timestamp);
+        payload.extend_from_slice(message.as_bytes());
+
+        socket.send(&payload)?;
+
         match socket.recv(&mut buf) {
-            Ok(n) => println!("[{i}] received: {}", String::from_utf8_lossy(&buf[..n])),
+            Ok(n) => {
+                let ts = &buf[0..8].try_into().unwrap();
+                let rtt_ms = calculate_rtt(ts).as_secs_f64() * 1000.0;
+                rtts_ms.push(rtt_ms);
+                println!(
+                    "[{i}] RTT: {:.3} ms, received: {}",
+                    rtt_ms,
+                    String::from_utf8_lossy(&buf[8..n])
+                );
+            }
             Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
                 eprintln!("[{i}] timeout");
             }
             Err(e) => return Err(e),
         }
     }
+
+    let avg_ms = rtts_ms.iter().sum::<f64>() / rtts_ms.len() as f64;
+
+    println!("Avg RTT: {:.3} ms", avg_ms);
 
     Ok(())
 }
@@ -158,11 +186,71 @@ fn tcp_client(host: String, port: u16, message: String, count: u32) -> std::io::
     let mut stream = TcpStream::connect((host, port))?;
     let mut buf = [0u8; 1472];
 
+    let mut rtts_ms: Vec<f64> = Vec::new();
+
     for i in 0..count {
-        stream.write_all(message.as_bytes())?;
+        let timestamp = ptpv2_now();
+        let mut payload = Vec::with_capacity(8 + message.len());
+        payload.extend_from_slice(&timestamp);
+        payload.extend_from_slice(message.as_bytes());
+
+        stream.write_all(&payload)?;
+
         let n = stream.read(&mut buf)?;
-        println!("[{i}] received: {}", String::from_utf8_lossy(&buf[..n]));
+
+        let rtt_ms = calculate_rtt(buf[0..8].try_into().unwrap()).as_secs_f64() * 1000.0;
+        rtts_ms.push(rtt_ms);
+
+        println!(
+            "[{i}] RTT: {:.3} ms, received: {}",
+            rtt_ms,
+            String::from_utf8_lossy(&buf[8..n])
+        );
     }
 
+    let avg_ms = rtts_ms.iter().sum::<f64>() / rtts_ms.len() as f64;
+
+    println!("Avg RTT: {:.3} ms", avg_ms);
+
     Ok(())
+}
+
+/// Return the current clock time as RFC 8877 4.3 -> PTPv2 Truncated Timestamp (8 octets, big-endian)
+/// We use TAI_UTC_OFFSET because I'm a macos user and i don't have TAI from the system
+fn ptpv2_now() -> [u8; 8] {
+    let delta = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock is before 1970");
+
+    let secs = (delta.as_secs() + TAI_UTC_OFFSET) as u32;
+    let nanos = delta.subsec_nanos();
+
+    let mut out = [0u8; 8];
+    out[0..4].copy_from_slice(&secs.to_be_bytes());
+    out[4..8].copy_from_slice(&nanos.to_be_bytes());
+
+    out
+}
+
+/// Parse ptpv2 Truncated Timestamp (8 octets, big-endian) into SystemTime
+/// Error if nanoseconds are malformed
+/// We use TAI_UTC_OFFSET because I'm a macos user and i don't have TAI from the system
+fn ptpv2_parse(buf: &[u8; 8]) -> Result<SystemTime, &'static str> {
+    let secs = u32::from_be_bytes(buf[0..4].try_into().unwrap());
+    let nanos = u32::from_be_bytes(buf[4..8].try_into().unwrap());
+
+    if nanos >= 1_000_000_000 {
+        return Err("malformed PTPv2");
+    }
+
+    let unix_secs = (secs as u64).saturating_sub(TAI_UTC_OFFSET);
+    Ok(UNIX_EPOCH + Duration::new(unix_secs, nanos))
+}
+
+/// calculate RTT assiming the buffer starts with PTPv2 Truncated Timestamp
+fn calculate_rtt(echoed: &[u8; 8]) -> Duration {
+    let sent = ptpv2_parse(echoed).expect("malformed timestamp");
+    SystemTime::now()
+        .duration_since(sent)
+        .unwrap_or(Duration::ZERO)
 }
