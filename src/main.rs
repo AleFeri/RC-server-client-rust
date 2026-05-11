@@ -119,7 +119,11 @@ fn tcp_server(port: u16, transform: Transform, rtt: bool, no_delay: bool) -> Res
         let stream = stream?;
         thread::spawn(move || {
             if let Err(e) = tcp_server_handle_client(stream, transform, rtt, no_delay) {
-                eprintln!("client error: {e}");
+                if e.kind() == ErrorKind::ConnectionReset {
+                    println!("client interrupted the connection");
+                } else {
+                    eprintln!("client error: {e}");
+                }
             }
         });
     }
