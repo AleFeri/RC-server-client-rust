@@ -195,6 +195,11 @@ fn udp_client(
         match socket.recv(&mut buf) {
             Ok(n) => {
                 if rtt {
+                    if n < 8 {
+                        eprint!("[{i}] invalid RTT response: < 8 bytes");
+                        continue;
+                    }
+
                     let rtt_ms =
                         calculate_rtt(buf[0..8].try_into().unwrap()).as_secs_f64() * 1000.0;
                     rtts_ms.push(rtt_ms);
@@ -215,8 +220,7 @@ fn udp_client(
     }
 
     if rtt {
-        let avg_ms = rtts_ms.iter().sum::<f64>() / rtts_ms.len() as f64;
-        println!("Avg RTT: {:.3} ms", avg_ms);
+        print_avg_rtt(&rtts_ms);
     }
 
     Ok(())
@@ -251,6 +255,11 @@ fn tcp_client(
         let n = stream.read(&mut buf)?;
 
         if rtt {
+            if n < 8 {
+                eprint!("[{i}] invalid RTT response: < 8 bytes");
+                continue;
+            }
+
             let rtt_ms = calculate_rtt(buf[0..8].try_into().unwrap()).as_secs_f64() * 1000.0;
             rtts_ms.push(rtt_ms);
             println!(
@@ -264,8 +273,7 @@ fn tcp_client(
     }
 
     if rtt {
-        let avg_ms = rtts_ms.iter().sum::<f64>() / rtts_ms.len() as f64;
-        println!("Avg RTT: {:.3} ms", avg_ms);
+        print_avg_rtt(&rtts_ms);
     }
 
     Ok(())
@@ -303,4 +311,17 @@ fn calculate_rtt(echoed: &[u8; 8]) -> Duration {
     SystemTime::now()
         .duration_since(ntp64_parse(echoed))
         .unwrap_or(Duration::ZERO)
+}
+
+/*
+ * Generic helper functions
+ */
+fn print_avg_rtt(rtts_ms: &[f64]) {
+    if rtts_ms.is_empty() {
+        println!("Avg RTT: unavailable (no valid responses)");
+        return;
+    }
+
+    let avg_ms = rtts_ms.iter().sum::<f64>() / rtts_ms.len() as f64;
+    println!("Avg RTT: {:.3} ms", avg_ms);
 }
