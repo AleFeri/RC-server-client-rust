@@ -175,6 +175,8 @@ fn udp_client(host: String, port: u16, message: String, count: u32, rtt: bool) -
     socket.set_read_timeout(Some(Duration::from_secs(5)))?;
     let mut buf = [0u8; 1472];
 
+    let mut sent = 0u32;
+    let mut received = 0u32;
     let mut rtts_ms: Vec<f64> = Vec::new();
 
     for i in 0..count {
@@ -188,6 +190,7 @@ fn udp_client(host: String, port: u16, message: String, count: u32, rtt: bool) -
         };
 
         socket.send(&payload)?;
+        sent += 1;
 
         match socket.recv(&mut buf) {
             Ok(n) => {
@@ -199,6 +202,7 @@ fn udp_client(host: String, port: u16, message: String, count: u32, rtt: bool) -
 
                     let rtt_ms =
                         calculate_rtt(buf[0..8].try_into().unwrap()).as_secs_f64() * 1000.0;
+                    received += 1;
                     rtts_ms.push(rtt_ms);
                     println!(
                         "[{i}] RTT: {:.3} ms, received: {}",
@@ -206,6 +210,7 @@ fn udp_client(host: String, port: u16, message: String, count: u32, rtt: bool) -
                         String::from_utf8_lossy(&buf[8..n])
                     );
                 } else {
+                    received += 1;
                     println!("[{i}] received: {}", String::from_utf8_lossy(&buf[..n]));
                 }
             }
@@ -219,6 +224,7 @@ fn udp_client(host: String, port: u16, message: String, count: u32, rtt: bool) -
     if rtt {
         print_avg_rtt(&rtts_ms);
     }
+    print_client_stats(sent, received);
 
     Ok(())
 }
@@ -234,6 +240,8 @@ fn tcp_client(
     let mut stream = TcpStream::connect((host, port))?;
     stream.set_nodelay(no_delay)?;
 
+    let mut sent = 0u32;
+    let mut received = 0u32;
     let mut rtts_ms: Vec<f64> = Vec::new();
 
     for i in 0..count {
@@ -247,6 +255,7 @@ fn tcp_client(
         };
 
         write_frame(&mut stream, &payload)?;
+        sent += 1;
 
         let Some(response) = read_frame(&mut stream)? else {
             eprintln!("[{i}] server closed connection");
@@ -260,6 +269,7 @@ fn tcp_client(
             }
 
             let rtt_ms = calculate_rtt(response[0..8].try_into().unwrap()).as_secs_f64() * 1000.0;
+            received += 1;
             rtts_ms.push(rtt_ms);
             println!(
                 "[{i}] RTT: {:.3} ms, received: {}",
@@ -267,6 +277,7 @@ fn tcp_client(
                 String::from_utf8_lossy(&response[8..])
             );
         } else {
+            received += 1;
             println!("[{i}] received: {}", String::from_utf8_lossy(&response));
         }
     }
@@ -274,6 +285,7 @@ fn tcp_client(
     if rtt {
         print_avg_rtt(&rtts_ms);
     }
+    print_client_stats(sent, received);
 
     Ok(())
 }
@@ -357,4 +369,10 @@ fn print_avg_rtt(rtts_ms: &[f64]) {
 
     let avg_ms = rtts_ms.iter().sum::<f64>() / rtts_ms.len() as f64;
     println!("Avg RTT: {:.3} ms", avg_ms);
+}
+
+fn print_client_stats(sent: u32, received: u32) {
+    println!("Sent: {sent}");
+    println!("Received: {received}");
+    println!("Unanswered: {}", sent - received);
 }
