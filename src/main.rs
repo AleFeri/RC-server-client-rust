@@ -1,4 +1,4 @@
-use std::io::{ErrorKind, Read, Write};
+use std::io::{ErrorKind, Read, Result, Write};
 use std::net::{TcpListener, TcpStream, UdpSocket};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -63,7 +63,7 @@ enum Transform {
     Reverse,
 }
 
-fn main() -> std::io::Result<()> {
+fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
@@ -95,7 +95,7 @@ fn main() -> std::io::Result<()> {
 /*
  * Servers
  */
-fn udp_server(port: u16, transform: Transform, rtt: bool) -> std::io::Result<()> {
+fn udp_server(port: u16, transform: Transform, rtt: bool) -> Result<()> {
     let socket = UdpSocket::bind(("0.0.0.0", port))?;
     let mut buf = [0u8; 1472];
 
@@ -113,7 +113,7 @@ fn udp_server(port: u16, transform: Transform, rtt: bool) -> std::io::Result<()>
     }
 }
 
-fn tcp_server(port: u16, transform: Transform, rtt: bool, no_delay: bool) -> std::io::Result<()> {
+fn tcp_server(port: u16, transform: Transform, rtt: bool, no_delay: bool) -> Result<()> {
     let listener = TcpListener::bind(("0.0.0.0", port))?;
     for stream in listener.incoming() {
         let stream = stream?;
@@ -131,24 +131,23 @@ fn tcp_server_handle_client(
     transform: Transform,
     rtt: bool,
     no_delay: bool,
-) -> std::io::Result<()> {
+) -> Result<()> {
     stream.set_nodelay(no_delay)?;
-    let mut buf = [0u8; 1472];
-    loop {
-        let n = stream.read(&mut buf)?;
-        if n == 0 {
-            return Ok(()); // conn closed by client
-        }
-        let response = if rtt && n > 8 {
-            let mut out = Vec::with_capacity(n);
-            out.extend_from_slice(&buf[..8]);
-            out.extend_from_slice(&apply_transform(&buf[8..n], transform));
+
+    while let Some(payload) = read_frame(&mut stream)? {
+        let response = if rtt && payload.len() > 8 {
+            let mut out = Vec::with_capacity(payload.len());
+            out.extend_from_slice(&payload[..8]);
+            out.extend_from_slice(&apply_transform(&payload[8..], transform));
             out
         } else {
-            apply_transform(&buf[..n], transform)
+            apply_transform(&payload, transform)
         };
-        stream.write_all(&response)?;
+
+        write_frame(&mut stream, &response)?;
     }
+
+    Ok(())
 }
 
 fn apply_transform(input: &[u8], transform: Transform) -> Vec<u8> {
@@ -166,13 +165,7 @@ fn apply_transform(input: &[u8], transform: Transform) -> Vec<u8> {
 /*
  * Clients
  */
-fn udp_client(
-    host: String,
-    port: u16,
-    message: String,
-    count: u32,
-    rtt: bool,
-) -> std::io::Result<()> {
+fn udp_client(host: String, port: u16, message: String, count: u32, rtt: bool) -> Result<()> {
     let socket = UdpSocket::bind("0.0.0.0:0")?;
     socket.connect((host, port))?;
     socket.set_read_timeout(Some(Duration::from_secs(5)))?;
@@ -233,10 +226,9 @@ fn tcp_client(
     count: u32,
     rtt: bool,
     no_delay: bool,
-) -> std::io::Result<()> {
+) -> Result<()> {
     let mut stream = TcpStream::connect((host, port))?;
     stream.set_nodelay(no_delay)?;
-    let mut buf = [0u8; 1472];
 
     let mut rtts_ms: Vec<f64> = Vec::new();
 
@@ -250,25 +242,28 @@ fn tcp_client(
             message.as_bytes().to_vec()
         };
 
-        stream.write_all(&payload)?;
+        write_frame(&mut stream, &payload)?;
 
-        let n = stream.read(&mut buf)?;
+        let Some(response) = read_frame(&mut stream)? else {
+            eprintln!("[{i}] server closed connection");
+            break;
+        };
 
         if rtt {
-            if n < 8 {
+            if response.len() < 8 {
                 eprintln!("[{i}] invalid RTT response: < 8 bytes");
                 continue;
             }
 
-            let rtt_ms = calculate_rtt(buf[0..8].try_into().unwrap()).as_secs_f64() * 1000.0;
+            let rtt_ms = calculate_rtt(response[0..8].try_into().unwrap()).as_secs_f64() * 1000.0;
             rtts_ms.push(rtt_ms);
             println!(
                 "[{i}] RTT: {:.3} ms, received: {}",
                 rtt_ms,
-                String::from_utf8_lossy(&buf[8..n])
+                String::from_utf8_lossy(&response[8..])
             );
         } else {
-            println!("[{i}] received: {}", String::from_utf8_lossy(&buf[..n]));
+            println!("[{i}] received: {}", String::from_utf8_lossy(&response));
         }
     }
 
@@ -277,6 +272,40 @@ fn tcp_client(
     }
 
     Ok(())
+}
+
+/*
+ * TCP helper functions
+ */
+fn write_frame(stream: &mut TcpStream, payload: &[u8]) -> Result<()> {
+    let len = payload.len() as u32;
+
+    let mut frame = Vec::with_capacity(4 + payload.len());
+    frame.extend_from_slice(&len.to_be_bytes());
+    frame.extend_from_slice(payload);
+
+    stream.write_all(&frame)?;
+
+    Ok(())
+}
+
+fn read_frame(stream: &mut TcpStream) -> Result<Option<Vec<u8>>> {
+    let mut len_buf = [0u8; 4];
+
+    match stream.read_exact(&mut len_buf) {
+        Ok(()) => {}
+        Err(e) if e.kind() == ErrorKind::UnexpectedEof => {
+            return Ok(None);
+        }
+        Err(e) => return Err(e),
+    }
+
+    let len = u32::from_be_bytes(len_buf) as usize;
+    let mut payload = vec![0u8; len];
+
+    stream.read_exact(&mut payload)?;
+
+    Ok(Some(payload))
 }
 
 /*
@@ -306,7 +335,7 @@ fn ntp64_parse(buf: &[u8; 8]) -> SystemTime {
     UNIX_EPOCH + Duration::new(unix_secs, nanos)
 }
 
-/// calculate RTT assiming the buffer starts with NTP64
+/// calculate RTT assuming the buffer starts with NTP64
 fn calculate_rtt(echoed: &[u8; 8]) -> Duration {
     SystemTime::now()
         .duration_since(ntp64_parse(echoed))
