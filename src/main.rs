@@ -5,8 +5,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use clap::{Parser, Subcommand, ValueEnum};
 
-/// I need a TAI UTC OFFSET because I'm on macos and I don't have CLOCK_TAI
-const TAI_UTC_OFFSET: u64 = 37;
+const NTP_UNIX_OFFSET: u64 = 2_208_988_800; // seconds from 1900 to 1970
 
 /// A simple UDP/TCP echo server/client
 #[derive(Parser)]
@@ -184,7 +183,7 @@ fn udp_client(
     for i in 0..count {
         let payload = if rtt {
             let mut p = Vec::with_capacity(8 + message.len());
-            p.extend_from_slice(&ptpv2_now());
+            p.extend_from_slice(&ntp64_now());
             p.extend_from_slice(message.as_bytes());
             p
         } else {
@@ -240,7 +239,7 @@ fn tcp_client(
     for i in 0..count {
         let payload = if rtt {
             let mut p = Vec::with_capacity(8 + message.len());
-            p.extend_from_slice(&ptpv2_now());
+            p.extend_from_slice(&ntp64_now());
             p.extend_from_slice(message.as_bytes());
             p
         } else {
@@ -272,42 +271,36 @@ fn tcp_client(
     Ok(())
 }
 
-/// Return the current clock time as RFC 8877 4.3 -> PTPv2 Truncated Timestamp (8 octets, big-endian)
-/// We use TAI_UTC_OFFSET because I'm a macos user and i don't have TAI from the system
-fn ptpv2_now() -> [u8; 8] {
-    let delta = SystemTime::now()
+/*
+ * Time stamp helper functions
+ */
+fn ntp64_now() -> [u8; 8] {
+    let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .expect("system clock is before 1970");
+        .expect("system clock before Unix epoch");
 
-    let secs = (delta.as_secs() + TAI_UTC_OFFSET) as u32;
-    let nanos = delta.subsec_nanos();
+    let seconds = now.as_secs() + NTP_UNIX_OFFSET;
+    let fraction = ((now.subsec_nanos() as u128) << 32) / 1_000_000_000u128;
 
     let mut out = [0u8; 8];
-    out[0..4].copy_from_slice(&secs.to_be_bytes());
-    out[4..8].copy_from_slice(&nanos.to_be_bytes());
-
+    out[0..4].copy_from_slice(&(seconds as u32).to_be_bytes());
+    out[4..8].copy_from_slice(&(fraction as u32).to_be_bytes());
     out
 }
 
-/// Parse ptpv2 Truncated Timestamp (8 octets, big-endian) into SystemTime
-/// Error if nanoseconds are malformed
-/// We use TAI_UTC_OFFSET because I'm a macos user and i don't have TAI from the system
-fn ptpv2_parse(buf: &[u8; 8]) -> Result<SystemTime, &'static str> {
-    let secs = u32::from_be_bytes(buf[0..4].try_into().unwrap());
-    let nanos = u32::from_be_bytes(buf[4..8].try_into().unwrap());
+fn ntp64_parse(buf: &[u8; 8]) -> SystemTime {
+    let seconds = u32::from_be_bytes(buf[0..4].try_into().unwrap()) as u64;
+    let fraction = u32::from_be_bytes(buf[4..8].try_into().unwrap()) as u128;
 
-    if nanos >= 1_000_000_000 {
-        return Err("malformed PTPv2");
-    }
+    let unix_secs = seconds.saturating_sub(NTP_UNIX_OFFSET);
+    let nanos = ((fraction * 1_000_000_000u128) >> 32) as u32;
 
-    let unix_secs = (secs as u64).saturating_sub(TAI_UTC_OFFSET);
-    Ok(UNIX_EPOCH + Duration::new(unix_secs, nanos))
+    UNIX_EPOCH + Duration::new(unix_secs, nanos)
 }
 
-/// calculate RTT assiming the buffer starts with PTPv2 Truncated Timestamp
+/// calculate RTT assiming the buffer starts with NTP64
 fn calculate_rtt(echoed: &[u8; 8]) -> Duration {
-    let sent = ptpv2_parse(echoed).expect("malformed timestamp");
     SystemTime::now()
-        .duration_since(sent)
+        .duration_since(ntp64_parse(echoed))
         .unwrap_or(Duration::ZERO)
 }
