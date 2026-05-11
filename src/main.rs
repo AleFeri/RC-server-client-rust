@@ -196,7 +196,7 @@ fn udp_client(
             Ok(n) => {
                 if rtt {
                     if n < 8 {
-                        eprint!("[{i}] invalid RTT response: < 8 bytes");
+                        eprintln!("[{i}] invalid RTT response: < 8 bytes");
                         continue;
                     }
 
@@ -256,7 +256,7 @@ fn tcp_client(
 
         if rtt {
             if n < 8 {
-                eprint!("[{i}] invalid RTT response: < 8 bytes");
+                eprintln!("[{i}] invalid RTT response: < 8 bytes");
                 continue;
             }
 
