@@ -222,7 +222,7 @@ fn udp_client(host: String, port: u16, message: String, count: u32, rtt: bool) -
     }
 
     if rtt {
-        print_avg_rtt(&rtts_ms);
+        print_rtt_stats(&rtts_ms);
     }
     print_client_stats(sent, received);
 
@@ -283,7 +283,7 @@ fn tcp_client(
     }
 
     if rtt {
-        print_avg_rtt(&rtts_ms);
+        print_rtt_stats(&rtts_ms);
     }
     print_client_stats(sent, received);
 
@@ -361,14 +361,17 @@ fn calculate_rtt(echoed: &[u8; 8]) -> Duration {
 /*
  * Generic helper functions
  */
-fn print_avg_rtt(rtts_ms: &[f64]) {
+fn print_rtt_stats(rtts_ms: &[f64]) {
     if rtts_ms.is_empty() {
         println!("Avg RTT: unavailable (no valid responses)");
+        println!("Max RTT: unavailable (no valid responses)");
         return;
     }
 
     let avg_ms = rtts_ms.iter().sum::<f64>() / rtts_ms.len() as f64;
+    let max_ms = rtts_ms.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     println!("Avg RTT: {:.3} ms", avg_ms);
+    println!("Max RTT: {:.3} ms", max_ms);
 }
 
 fn print_client_stats(sent: u32, received: u32) {
