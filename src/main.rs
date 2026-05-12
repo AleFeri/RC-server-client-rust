@@ -26,7 +26,7 @@ enum Command {
         /// Enable rtt
         #[arg(long)]
         rtt: bool,
-        /// Only for TCP (upd ignores it)
+        /// Only for TCP (udp ignores it)
         #[arg(long)]
         no_delay: bool,
     },
@@ -42,7 +42,7 @@ enum Command {
         /// Enable rtt
         #[arg(long)]
         rtt: bool,
-        /// Only for TCP (upd ignores it)
+        /// Only for TCP (udp ignores it)
         #[arg(long)]
         no_delay: bool,
     },
