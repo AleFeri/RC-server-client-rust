@@ -999,6 +999,7 @@
 [998] RTT: 20.595 ms, received: CIAO
 [999] RTT: 19.208 ms, received: CIAO
 Avg RTT: 19.424 ms
+Max RTT: 79.990 ms
 Sent: 1000
 Received: 1000
 Unanswered: 0

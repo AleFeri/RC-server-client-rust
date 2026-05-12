@@ -999,6 +999,7 @@
 [998] RTT: 18.869 ms, received: oaic
 [999] RTT: 18.624 ms, received: oaic
 Avg RTT: 18.800 ms
+Max RTT: 22.371 ms
 Sent: 1000
 Received: 1000
 Unanswered: 0
