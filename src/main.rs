@@ -97,10 +97,12 @@ fn main() -> Result<()> {
  */
 fn udp_server(port: u16, transform: Transform, rtt: bool) -> Result<()> {
     let socket = UdpSocket::bind(("0.0.0.0", port))?;
+    println!("[udp] listening on 0.0.0.0:{port}");
     let mut buf = [0u8; 1472];
 
     loop {
         let (n, addr) = socket.recv_from(&mut buf)?;
+        println!("[udp] received {n} bytes from {addr}");
         let response = if rtt && n > 8 {
             let mut out = Vec::with_capacity(n);
             out.extend_from_slice(&buf[..8]);
@@ -110,20 +112,26 @@ fn udp_server(port: u16, transform: Transform, rtt: bool) -> Result<()> {
             apply_transform(&buf[..n], transform)
         };
         socket.send_to(&response, addr)?;
+        println!("[udp] sent {} bytes to {addr}", response.len());
     }
 }
 
 fn tcp_server(port: u16, transform: Transform, rtt: bool, no_delay: bool) -> Result<()> {
     let listener = TcpListener::bind(("0.0.0.0", port))?;
+    println!("[tcp] listening on 0.0.0.0:{port}");
     for stream in listener.incoming() {
         let stream = stream?;
+        let peer_addr = stream.peer_addr()?;
+        println!("[tcp] accepted connection from {peer_addr}");
         thread::spawn(move || {
             if let Err(e) = tcp_server_handle_client(stream, transform, rtt, no_delay) {
                 if e.kind() == ErrorKind::ConnectionReset {
-                    println!("client interrupted the connection");
+                    println!("[tcp] client {peer_addr} interrupted the connection");
                 } else {
-                    eprintln!("client error: {e}");
+                    eprintln!("[tcp] client {peer_addr} error: {e}");
                 }
+            } else {
+                println!("[tcp] client {peer_addr} disconnected")
             }
         });
     }
@@ -137,8 +145,10 @@ fn tcp_server_handle_client(
     no_delay: bool,
 ) -> Result<()> {
     stream.set_nodelay(no_delay)?;
+    let peer_addr = stream.peer_addr()?;
 
     while let Some(payload) = read_frame(&mut stream)? {
+        println!("[tcp] received {} bytes from {peer_addr}", payload.len());
         let response = if rtt && payload.len() > 8 {
             let mut out = Vec::with_capacity(payload.len());
             out.extend_from_slice(&payload[..8]);
@@ -149,6 +159,7 @@ fn tcp_server_handle_client(
         };
 
         write_frame(&mut stream, &response)?;
+        println!("[tcp] sent {} bytes to {peer_addr}", response.len());
     }
 
     Ok(())
