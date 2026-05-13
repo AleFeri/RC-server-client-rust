@@ -214,8 +214,8 @@ fn udp_client(host: String, port: u16, message: String, count: u32, rtt: bool) -
                     println!("[{i}] received: {}", String::from_utf8_lossy(&buf[..n]));
                 }
             }
-            Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
-                eprintln!("[{i}] timeout");
+            Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::ConnectionRefused) => {
+                eprintln!("[{i}] unanswered");
             }
             Err(e) => return Err(e),
         }
