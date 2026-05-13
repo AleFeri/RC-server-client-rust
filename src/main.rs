@@ -86,8 +86,8 @@ fn main() -> Result<()> {
             rtt,
             no_delay,
         } => match protocol {
-            Protocol::Udp => udp_client(host, port, message, count, rtt),
-            Protocol::Tcp => tcp_client(host, port, message, count, rtt, no_delay),
+            Protocol::Udp => udp_client(&host, port, message, count, rtt),
+            Protocol::Tcp => tcp_client(&host, port, message, count, rtt, no_delay),
         },
     }
 }
@@ -169,9 +169,8 @@ fn apply_transform(input: &[u8], transform: Transform) -> Vec<u8> {
 /*
  * Clients
  */
-fn udp_client(host: String, port: u16, message: String, count: u32, rtt: bool) -> Result<()> {
+fn udp_client(host: &str, port: u16, message: String, count: u32, rtt: bool) -> Result<()> {
     let socket = UdpSocket::bind("0.0.0.0:0")?;
-    socket.connect((host, port))?;
     socket.set_read_timeout(Some(Duration::from_secs(5)))?;
     let mut buf = [0u8; 1472];
 
@@ -189,7 +188,7 @@ fn udp_client(host: String, port: u16, message: String, count: u32, rtt: bool) -
             message.as_bytes().to_vec()
         };
 
-        socket.send(&payload)?;
+        socket.send_to(&payload, (host, port))?;
         sent += 1;
 
         match socket.recv(&mut buf) {
@@ -230,7 +229,7 @@ fn udp_client(host: String, port: u16, message: String, count: u32, rtt: bool) -
 }
 
 fn tcp_client(
-    host: String,
+    host: &str,
     port: u16,
     message: String,
     count: u32,
